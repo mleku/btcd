@@ -32,6 +32,8 @@ replace github.com/btcsuite/btcd/btcutil => ./btcutil
 
 replace github.com/btcsuite/btcd/btcec => github.com/mleku/ec v1.0.0
 
+replace crypto/sha256 => github.com/minio/sha256-simd v1.0.1
+
 // The retract statements below fixes an accidental push of the tags of a btcd
 // fork.
 retract (

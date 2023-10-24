@@ -6,6 +6,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
@@ -16,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -67,6 +69,7 @@ const (
 	defaultTxIndex               = false
 	defaultAddrIndex             = false
 	pruneMinSize                 = 1536
+	defaultGOGC                  = 300
 )
 
 var (
@@ -77,6 +80,7 @@ var (
 	defaultRPCKeyFile  = filepath.Join(defaultHomeDir, "rpc.key")
 	defaultRPCCertFile = filepath.Join(defaultHomeDir, "rpc.cert")
 	defaultLogDir      = filepath.Join(defaultHomeDir, defaultLogDirname)
+	defaultGOMAXPROCS  = runtime.NumCPU() * 3
 )
 
 // runServiceCommand is only set to a real function on Windows.  It is used
@@ -121,6 +125,8 @@ type config struct {
 	DropTxIndex          bool          `long:"droptxindex" description:"Deletes the hash-based transaction index from the database on start up and then exits."`
 	ExternalIPs          []string      `long:"externalip" description:"Add an ip to the list of local addresses we claim to listen on to peers"`
 	Generate             bool          `long:"generate" description:"Generate (mine) bitcoins using the CPU"`
+	GoGC                 int           `long:"gogc" description:"configures the ratio of the garbage collector (GOGC) - higher values will lead to greater memory usage but decrease time spent by Go runtime collecting garbage"`
+	GoMaxProcs           int           `long:"gomaxprocs" description:"sets the maximum number of goroutines to allow to run concurrently (GOMAXPROCS). Goroutines are not processor threads, they are better when greater than processor threads"`
 	FreeTxRelayLimit     float64       `long:"limitfreerelay" description:"Limit relay of transactions with no transaction fee to the given amount in thousands of bytes per minute"`
 	Listeners            []string      `long:"listen" description:"Add an interface/port to listen for connections (default all interfaces port: 8333, testnet: 18333)"`
 	LogDir               string        `long:"logdir" description:"Directory to log output."`
@@ -442,6 +448,8 @@ func loadConfig() (*config, []string, error) {
 		Generate:             defaultGenerate,
 		TxIndex:              defaultTxIndex,
 		AddrIndex:            defaultAddrIndex,
+		GoMaxProcs:           defaultGOMAXPROCS,
+		GoGC:                 defaultGOGC,
 	}
 
 	// Service options which are only added on Windows.
@@ -540,6 +548,10 @@ func loadConfig() (*config, []string, error) {
 		fmt.Fprintln(os.Stderr, err)
 		return nil, nil, err
 	}
+
+	// write the default configuration file to the shiny new home directory
+	os.WriteFile(filepath.Join(defaultHomeDir, defaultConfigFilename),
+		[]byte(btcdConfFile), 0600)
 
 	// Multiple networks can't be selected simultaneously.
 	numNets := 0
@@ -1163,6 +1175,28 @@ func loadConfig() (*config, []string, error) {
 		return nil, nil, err
 	}
 
+	// Clamp GOMAXPROCS between 1 and 10x number of CPU threads
+	if cfg.GoMaxProcs < 1 {
+		cfg.GoMaxProcs = 1
+	}
+	if cfg.GoMaxProcs > runtime.NumCPU()*10 {
+		cfg.GoMaxProcs = runtime.NumCPU() * 10
+	}
+
+	// Set the configured value on the runtime.
+	runtime.GOMAXPROCS(cfg.GoMaxProcs)
+
+	// Clamp GOGC between 1 and 1000
+	if cfg.GoGC < 1 {
+		cfg.GoGC = 1
+	}
+	if cfg.GoGC > 1000 {
+		cfg.GoGC = 1000
+	}
+
+	// Set the configured value on the runtime.
+	debug.SetGCPercent(cfg.GoGC)
+
 	// Warn about missing config file only after all other configuration is
 	// done.  This prevents the warning on help messages and invalid
 	// options.  Note this should go directly before the return.
@@ -1182,12 +1216,12 @@ func createDefaultConfigFile(destinationPath string) error {
 		return err
 	}
 
-	// We assume sample config file path is same as binary
-	path, err := filepath.Abs(filepath.Dir(os.Args[0]))
-	if err != nil {
-		return err
-	}
-	sampleConfigPath := filepath.Join(path, sampleConfigFilename)
+	// // We assume sample config file path is same as binary
+	// path, err := filepath.Abs(filepath.Dir(os.Args[0]))
+	// if err != nil {
+	// 	return err
+	// }
+	// sampleConfigPath := filepath.Join(path, sampleConfigFilename)
 
 	// We generate a random user and password
 	randomBytes := make([]byte, 20)
@@ -1203,11 +1237,11 @@ func createDefaultConfigFile(destinationPath string) error {
 	}
 	generatedRPCPass := base64.StdEncoding.EncodeToString(randomBytes)
 
-	src, err := os.Open(sampleConfigPath)
-	if err != nil {
-		return err
-	}
-	defer src.Close()
+	// src, err := os.Open(sampleConfigPath)
+	// if err != nil {
+	// 	return err
+	// }
+	// defer src.Close()
 
 	dest, err := os.OpenFile(destinationPath,
 		os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0600)
@@ -1215,6 +1249,8 @@ func createDefaultConfigFile(destinationPath string) error {
 		return err
 	}
 	defer dest.Close()
+
+	src := bytes.NewBuffer([]byte(btcdConfFile))
 
 	// We copy every line from the sample config file to the destination,
 	// only replacing the two lines for rpcuser and rpcpass
